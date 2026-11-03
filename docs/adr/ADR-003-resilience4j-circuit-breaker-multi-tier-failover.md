@@ -1,4 +1,4 @@
-# ADR-003: Multi-tier Resilience & Vendor Failover Strategy with Resilience4j
+﻿# ADR-003: Multi-tier Resilience & Vendor Failover Strategy with Resilience4j
 
 ## Status
 **ACCEPTED**
@@ -11,7 +11,7 @@ Third-party identity verification, biometric liveness, and sanctions screening p
 
 Without fault isolation:
 - Thread pools in Spring Boot get starved waiting on slow vendor responses, causing cascading collapse across the entire onboarding microservice.
-- Prospective customers face onboarding timeouts, drop out of the conversion funnel, and lose trust in Wise.
+- Prospective customers face onboarding timeouts, drop out of the conversion funnel, and lose trust in the service.
 
 ## Decision
 We implement a **Multi-Tier Fault Tolerance Architecture** utilizing **Resilience4j**:

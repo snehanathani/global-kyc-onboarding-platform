@@ -1,4 +1,4 @@
-# Wise Global KYC & Onboarding Platform 🚀
+# Global KYC & Onboarding Decision Platform 🚀
 
 [![Java 21](https://img.shields.io/badge/Java-21-orange.svg)](https://adoptium.net)
 [![Spring Boot 3.3.4](https://img.shields.io/badge/Spring%20Boot-3.3.4-brightgreen.svg)](https://spring.io/projects/spring-boot)
@@ -7,17 +7,17 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue.svg)](https://www.postgresql.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Architect-level, mission-critical Global KYC and Onboarding Decision Engine modeled directly on Wise (formerly TransferWise) engineering principles.** Powers personal onboarding, corporate KYB verification, and embedded banking partner rails across **160+ countries and 40+ currencies**.
+> **Architect-level, mission-critical Global KYC and Onboarding Decision Engine modeled on leading tier-1 cross-border multi-currency fintech architectures.** Powers personal onboarding, corporate KYB verification, and embedded banking partner rails across **160+ countries and 40+ currencies**.
 
 ---
 
 ## 🏛️ Executive Summary
 
-Moving tens of billions of pounds quarterly while onboarding ~500k customers per month requires an onboarding engine that achieves high velocity without compromising on regulatory compliance.
+Processing hundreds of billions in cross-border volume annually while onboarding ~500k customers per month requires an onboarding engine that achieves high velocity without compromising on regulatory compliance.
 
-This platform implements the architecture used by Wise's **Global KYC and Onboarding Squads**:
+This platform implements the architecture required for **Global KYC and Onboarding Systems**:
 1. **Straight-Through Processing (STP)**: $> 85\%$ of verified customers auto-approved in $< 500\text{ms}$ with zero human intervention.
-2. **Multi-Tier Fault Tolerance (Resilience4j)**: Active circuit breaker failover across identity providers (Onfido $\to$ Veriff) and graceful degradation when external SaaS dependencies experience outages.
+2. **Multi-Tier Fault Tolerance (Resilience4j)**: Active circuit breaker failover across identity providers (Onfido to Veriff) and graceful degradation when external SaaS dependencies experience outages.
 3. **Zero Data Loss (Transactional Outbox Pattern)**: Atomic PostgreSQL transaction writes paired with asynchronous Kafka event streaming to eliminate dual-write inconsistencies.
 4. **Config-Driven Compliance DAG**: Declarative multi-jurisdiction rule graph (UK FCA, EU AMLD6, US FinCEN, SG MAS) with **Shadow Mode** canary deployments for zero-downtime policy updates.
 5. **Human-in-the-Loop Operational Tooling**: High-risk actors and sanctions matches quarantined into real-time triage queues for Compliance Officer review.
@@ -28,20 +28,22 @@ This platform implements the architecture used by Wise's **Global KYC and Onboar
 
 ```mermaid
 flowchart TD
-    subgraph Ingress["Client & Partner Ingress"]
-        Web["Wise Web / Next.js"]
-        Mobile["iOS / Android Apps"]
-        Platform["Wise Platform Banking APIs"]
+    subgraph Ingress["Client and Ingress Layer"]
+        Web["Web and Portal Applications"]
+        Mobile["iOS and Android Native Apps"]
+        Platform["B2B Banking APIs"]
     end
 
-    Ingress --> Gateway["API Gateway / Envoy Rate Limiter"]
+    Web --> Gateway["API Gateway and Rate Limiter"]
+    Mobile --> Gateway
+    Platform --> Gateway
 
-    subgraph CoreEngine["Wise Global KYC Service Mesh"]
-        Orchestrator["KycVerificationOrchestrator<br/>(Spring Boot 3 / Java 21)"]
-        RuleDAG["DynamicRuleEngine<br/>(Jurisdiction DAG & Shadow Mode)"]
-        ResilienceGw["IdentityVerificationGateway<br/>(Resilience4j Circuit Breaker)"]
+    subgraph CoreEngine["Global KYC Service Mesh"]
+        Orchestrator["KycVerificationOrchestrator<br/>(Java 21 / Spring Boot 3)"]
+        RuleDAG["DynamicRuleEngine<br/>(Jurisdiction DAG and Shadow Mode)"]
+        ResilienceGw["IdentityVerificationGateway<br/>(Resilience4j Circuit Breakers)"]
         OutboxWorker["OutboxPublisher<br/>(Transactional Outbox / CDC)"]
-        ReviewOps["HumanReviewService<br/>(Compliance Review Queue)"]
+        ReviewOps["HumanReviewService<br/>(Compliance Review Queue API)"]
     end
 
     Gateway --> Orchestrator
@@ -51,32 +53,32 @@ flowchart TD
     Orchestrator --> ResilienceGw
 
     subgraph DataStorage["Polyglot Persistence Layer"]
-        Postgres[("PostgreSQL 16 Primary<br/>ACID Entities & Outbox Table")]
-        RedisCache[("Redis 7<br/>Idempotency Tokens & Locks")]
+        Postgres[("PostgreSQL 16 Primary<br/>ACID Entities, Audit Logs and Outbox")]
+        RedisCache[("Redis 7<br/>Idempotency Tokens and Locks")]
     end
 
     Orchestrator --> Postgres
     Orchestrator --> RedisCache
     OutboxWorker --> Postgres
 
-    subgraph ExternalVendors["3rd-Party Verification Providers"]
-        PrimaryVendor["Primary Vendor (Onfido)<br/>NFC ID & Biometrics"]
-        FallbackVendor["Fallback Vendor (Veriff)<br/>Active Circuit Failover"]
-        SanctionsVendor["Sanctions / PEP (ComplyAdvantage)<br/>OFAC / HMT Screening"]
+    subgraph ExternalVendors["External Verification Providers"]
+        PrimaryVendor["Primary Vendor Onfido<br/>NFC ID and Biometrics"]
+        FallbackVendor["Fallback Vendor Veriff<br/>Active Circuit Failover"]
+        SanctionsVendor["Sanctions ComplyAdvantage<br/>OFAC and HMT Screening"]
     end
 
-    ResilienceGw -->|Circuit Closed| PrimaryVendor
-    ResilienceGw -.->|Failover on Outage (Circuit Open)| FallbackVendor
+    ResilienceGw -->|"Circuit Closed: Normal Route"| PrimaryVendor
+    ResilienceGw -.->|"Failover: Circuit Open"| FallbackVendor
     Orchestrator --> SanctionsVendor
 
     subgraph EventStream["Apache Kafka Streaming"]
         KafkaBus[["Apache Kafka Broker Cluster<br/>(KRaft Mode)"]]
         Downstream1["Account Activation Service"]
         Downstream2["Debit Card Issuance Service"]
-        Downstream3["Regulatory Audit Reporting"]
+        Downstream3["Regulatory Compliance Reporting"]
     end
 
-    OutboxWorker -->|Publish Events| KafkaBus
+    OutboxWorker -->|"Publish Events"| KafkaBus
     KafkaBus --> Downstream1
     KafkaBus --> Downstream2
     KafkaBus --> Downstream3
@@ -247,9 +249,9 @@ curl -X POST http://localhost:8080/api/v1/compliance/cases/{caseId}/decision \
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**: Exhaustive architectural blueprint, PACELC / CAP trade-offs, thread-pool sizing, zero-downtime DB migrations, and 100M+ customer scale.
 - **[INTERVIEW_PLAYBOOK.md](INTERVIEW_PLAYBOOK.md)**: The definitive Senior II / Lead Software Engineer interview preparation guide:
-  - Wise Squad Autonomy and "Customer First, Team Second, Ego Last" culture.
+  - Cross-functional squad autonomy ("You build it, you run it").
   - Whiteboard System Design walkthrough for Global KYC.
-  - 25+ Real Wise interview questions with Lead-level exemplar answers.
+  - 25+ Real fintech interview questions with Lead-level exemplar answers.
   - Collaboration with Product Managers: Translating FCA/AMLD6 regulations into technical milestones, measuring conversion vs compliance risk, running canary rule rollouts.
 - **[Architectural Decision Records (ADRs)](docs/adr/)**:
   - [ADR-001: Transactional Outbox vs Two-Phase Commit](docs/adr/ADR-001-transactional-outbox-vs-2pc.md)
@@ -262,4 +264,4 @@ curl -X POST http://localhost:8080/api/v1/compliance/cases/{caseId}/decision \
 
 ## 👤 Author
 **Sneha Nathani**  
-[GitHub Profile](https://github.com/snehanathani) | [Repository](https://github.com/snehanathani/wise-global-kyc-platform)
+[GitHub Profile](https://github.com/snehanathani) | [Repository](https://github.com/snehanathani/global-kyc-onboarding-platform)

@@ -1,13 +1,13 @@
-# Wise Global KYC & Onboarding Platform: Architectural Specification
+# Global KYC & Onboarding Decision Platform: Architectural Specification
 
 ## 1. Executive Summary & Problem Domain
 
-The **Global KYC (Know Your Customer) and Onboarding Platform** is the mission-critical gatekeeper of the Wise ecosystem, responsible for verifying identity, determining regulatory compliance, and managing risk across **160+ countries and 40+ currencies**. 
+The **Global KYC (Know Your Customer) and Onboarding Platform** is the mission-critical gatekeeper of a modern Tier-1 global cross-border financial ecosystem, responsible for verifying identity, determining regulatory compliance, and managing risk across **160+ countries and 40+ currencies**. 
 
-The platform powers three core engineering squads at Wise:
+The platform supports three core squads:
 1. **Personal Onboarding Verification**: Low-friction, high-velocity identity, address, and biometric verification for retail users.
-2. **Business Onboarding Verification (KYB)**: Multi-tier corporate entity verification, Companies House/registry corroboration, and Ultimate Beneficial Owner (UBO $\ge 25\%$) tracking.
-3. **Wise Platform Verification**: Embedded finance APIs allowing tier-1 banks and neo-brokers (e.g., Monzo, Interactive Brokers) to leverage Wise onboarding rails.
+2. **Business Onboarding Verification (KYB)**: Multi-tier corporate entity verification, Companies House and commercial registry corroboration, and Ultimate Beneficial Owner (UBO $\ge 25\%$) tracking.
+3. **Platform Embedded Verification**: Embedded finance APIs allowing tier-1 banks and neo-brokers to leverage global onboarding rails.
 
 ### Core Architectural Mandates
 - **Straight-Through Processing (STP)**: Target $> 85\%$ instantaneous verification in $< 500\text{ms}$ with zero human intervention.
@@ -21,19 +21,19 @@ The platform powers three core engineering squads at Wise:
 
 ```mermaid
 flowchart TD
-    subgraph ClientLayer["Client & Partner Ingress"]
-        Web["Wise Web / CRAB Next.js"]
-        Mobile["iOS / Android Native Apps"]
-        B2B["Wise Platform Banking APIs"]
+    subgraph ClientLayer["Client and Partner Ingress"]
+        Web["Web and Portal Applications"]
+        Mobile["iOS and Android Native Apps"]
+        B2B["Embedded Banking Partner APIs"]
     end
 
-    Gateway["API Gateway / Envoy Ingress & Rate Limiter"]
+    Gateway["API Gateway and Rate Limiter"]
     ClientLayer --> Gateway
 
-    subgraph ServiceMesh["Wise Global KYC Service Mesh"]
+    subgraph ServiceMesh["Global KYC Service Mesh"]
         Orchestrator["KycVerificationOrchestrator<br/>(Spring Boot 3 / Java 21)"]
-        RuleEngine["DynamicRuleEngine<br/>(Jurisdiction DAG & Shadow Evaluator)"]
-        ResilienceGw["IdentityVerificationGateway<br/>(Resilience4j Circuit Breaker & Bulkhead)"]
+        RuleEngine["DynamicRuleEngine<br/>(Jurisdiction DAG and Shadow Evaluator)"]
+        ResilienceGw["IdentityVerificationGateway<br/>(Resilience4j Circuit Breaker)"]
         OutboxWorker["OutboxPublisher<br/>(Scheduled CDC / At-Least-Once Delivery)"]
         AgentTooling["HumanReviewService<br/>(Compliance Officer Review API)"]
     end
@@ -45,32 +45,32 @@ flowchart TD
     Orchestrator --> ResilienceGw
 
     subgraph DataPersistence["Polyglot Persistence Layer"]
-        Postgres[("PostgreSQL 16 Primary<br/>ACID Entities & Outbox Table")]
-        RedisCache[("Redis 7 Cluster<br/>Idempotency Tokens & Locks")]
+        Postgres[("PostgreSQL 16 Primary<br/>ACID Entities and Outbox Table")]
+        RedisCache[("Redis 7 Cluster<br/>Idempotency Tokens and Locks")]
     end
 
     Orchestrator --> Postgres
     Orchestrator --> RedisCache
     OutboxWorker --> Postgres
 
-    subgraph ExternalVendors["External Identity & Compliance SaaS"]
-        PrimaryVendor["Primary Vendor (Onfido)<br/>NFC ID & Biometrics"]
-        FallbackVendor["Fallback Vendor (Veriff)<br/>Active Circuit Failover"]
-        SanctionsVendor["Sanctions / PEP (ComplyAdvantage)<br/>OFAC / HMT Screening"]
+    subgraph ExternalVendors["External Identity and Compliance Providers"]
+        PrimaryVendor["Primary Vendor Onfido<br/>NFC ID and Biometrics"]
+        FallbackVendor["Fallback Vendor Veriff<br/>Active Circuit Failover"]
+        SanctionsVendor["Sanctions Screening ComplyAdvantage<br/>OFAC and HMT Watchlists"]
     end
 
-    ResilienceGw -->|Circuit Breaker (Closed)| PrimaryVendor
-    ResilienceGw -.->|Failover on Outage (Open)| FallbackVendor
+    ResilienceGw -->|"Circuit Closed: Primary"| PrimaryVendor
+    ResilienceGw -.->|"Circuit Open: Failover"| FallbackVendor
     Orchestrator --> SanctionsVendor
 
-    subgraph StreamingEcosystem["Event Streaming & Downstream Mesh"]
+    subgraph StreamingEcosystem["Event Streaming and Downstream Mesh"]
         KafkaBus[["Apache Kafka Broker Cluster<br/>(KRaft Mode)"]]
         Downstream1["Account Activation Service"]
         Downstream2["Debit Card Issuance Service"]
         Downstream3["Compliance Audit Reporting"]
     end
 
-    OutboxWorker -->|Publish Events| KafkaBus
+    OutboxWorker -->|"Publish Events"| KafkaBus
     KafkaBus --> Downstream1
     KafkaBus --> Downstream2
     KafkaBus --> Downstream3
@@ -88,37 +88,37 @@ sequenceDiagram
     participant Orch as KycVerificationOrchestrator
     participant Rules as DynamicRuleEngine
     participant Res as IdentityVerificationGateway
-    participant Vendor as Primary Vendor (Onfido)
-    participant DB as PostgreSQL (ACID Outbox)
+    participant Vendor as Primary Vendor Onfido
+    participant DB as PostgreSQL ACID Outbox
     participant Kafka as Apache Kafka
 
     Customer->>API: POST /api/v1/kyc/verifications (Idempotency Key)
     API->>Orch: initiateAndProcessVerification(request)
-    Orch->>DB: Check Idempotency Token & Persist INITIATED Case
+    Orch->>DB: Check Idempotency Token and Persist INITIATED Case
     Orch->>Rules: evaluateCase(case, existingChecks)
-    Rules-->>Orch: Required Checks: [ID_DOC, BIOMETRICS, SANCTIONS]
+    Rules-->>Orch: Required Checks: ID_DOC, BIOMETRICS, SANCTIONS
     
-    par Identity & Biometrics Check
+    par Identity and Biometrics Check
         Orch->>Res: executeDocumentVerification(customerId, docId)
         Res->>Vendor: POST /v3/checks (Timeout: 1500ms)
         Vendor-->>Res: 200 OK (Confidence: 0.97)
         Res-->>Orch: CheckStatus.PASSED
-    and Sanctions & PEP Check
+    and Sanctions and PEP Check
         Orch->>Vendor: screenSanctionsAndPep(legalName, country)
         Vendor-->>Orch: Clean (Score: 0.0, CheckStatus.PASSED)
     end
 
-    Note over Orch: All checks passed with confidence >= 0.85<br/>Straight-Through-Processing (STP) Approved!
+    Note over Orch: All checks passed with confidence >= 0.85. Straight-Through-Processing Approved
     
     rect rgb(240, 255, 240)
-        Orch->>DB: ATOMIC TX BEGIN<br/>Update Case to AUTO_APPROVED<br/>Insert ComplianceAuditLog<br/>Insert OutboxMessage(KYC_VERIFICATION_COMPLETED)<br/>ATOMIC TX COMMIT
+        Orch->>DB: ATOMIC TX BEGIN: Update Case to AUTO_APPROVED, Insert AuditLog, Insert OutboxMessage, COMMIT
     end
 
     Orch-->>API: 201 Created (VerificationCaseResponse)
-    API-->>Customer: HTTP 201 AUTO_APPROVED (< 450ms)
+    API-->>Customer: HTTP 201 AUTO_APPROVED (under 450ms)
 
     Note over DB,Kafka: Asynchronous Outbox Dispatch
-    DB->>Kafka: OutboxPublisher polls & publishes to 'kyc.verification.completed'
+    DB->>Kafka: OutboxPublisher polls and publishes to kyc.verification.completed
 ```
 
 ---
@@ -133,26 +133,26 @@ stateDiagram-v2
 
     state Closed {
         [*] --> HealthyRequests
-        HealthyRequests --> HealthyRequests: Calls succeed (< 50% failure)
+        HealthyRequests --> HealthyRequests: Calls succeed
     }
 
-    Closed --> Open: Failure Rate >= 50% over 10 calls<br/>(or Gateway Timeout 504)
+    Closed --> Open: Failure Rate >= 50% over 10 calls
     
     state Open {
         [*] --> FastFail
         FastFail --> FallbackToSecondary: Immediately route calls to Veriff
     }
 
-    Open --> HalfOpen: Wait Duration (8,000ms) elapsed
+    Open --> HalfOpen: Wait Duration 8000ms elapsed
     
     state HalfOpen {
         [*] --> ProbeRequests: Allow 3 trial requests
-        ProbeRequests --> ProbeSuccess: >= 50% succeed
-        ProbeRequests --> ProbeFail: >= 50% fail
+        ProbeRequests --> ProbeSuccess: Majority succeed
+        ProbeRequests --> ProbeFail: Majority fail
     }
 
-    HalfOpen --> Closed: ProbeSuccess (Onfido recovered)
-    HalfOpen --> Open: ProbeFail (Remain on Veriff fallback)
+    HalfOpen --> Closed: ProbeSuccess - Primary recovered
+    HalfOpen --> Open: ProbeFail - Remain on Veriff fallback
 ```
 
 ### Fallback Guarantee
@@ -167,7 +167,7 @@ stateDiagram-v2
 | Property | Choice | Rationale |
 | :--- | :--- | :--- |
 | **CAP Theorem** | **CP** (Consistency / Partition Tolerance) | In financial compliance, verifying sanctions and regulatory identity requires strict correctness over dirty reads. A customer cannot be approved based on stale sanctions data. |
-| **PACELC Theorem** | **PC/EC** (Partition: Consistency; Else: Consistency) | Under normal operations, write operations prioritize consistency to prevent dual-spend / duplicate onboarding. Reads (status queries) leverage read replicas with eventual consistency ($< 50\text{ms}$ replication lag). |
+| **PACELC Theorem** | **PC/EC** (Partition: Consistency; Else: Consistency) | Under normal operations, write operations prioritize consistency to prevent duplicate onboarding. Reads (status queries) leverage read replicas with eventual consistency ($< 50\text{ms}$ replication lag). |
 
 ### Latency Budget (Target: $< 500\text{ms}$ p99)
 - Gateway Authentication & Ingress: $15\text{ms}$
@@ -181,7 +181,7 @@ stateDiagram-v2
 
 ## 6. Zero-Downtime Database Migrations (Expand/Contract Pattern)
 
-Wise runs hundreds of continuous deployments per week. Database schema updates follow the **Expand / Contract (Parallel Run)** pattern:
+High-frequency CI/CD deployments require zero-downtime database schema updates following the **Expand / Contract (Parallel Run)** pattern:
 1. **Expand Phase**: Add new nullable columns or tables (e.g. `aggregate_risk_score`). Existing application code continues functioning uninterrupted.
 2. **Dual-Write Phase**: Deploy new application version that writes to both legacy and new structures while reading from legacy.
 3. **Backfill Phase**: Asynchronous batch job backfills historical data.

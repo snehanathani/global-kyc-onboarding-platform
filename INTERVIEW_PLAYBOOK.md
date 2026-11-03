@@ -1,19 +1,19 @@
-# Wise Senior II / Lead Software Engineer: Global KYC & Onboarding Interview Playbook
+# Senior II / Lead Software Engineer: Global KYC & Onboarding Interview Playbook
 
-This playbook is the comprehensive preparation guide for the **Senior II / Lead Software Engineer - Global KYC and Onboarding** role at Wise (London HQ, Worship Square). It links directly to the architectural principles implemented in the [`wise-global-kyc-platform`](https://github.com/snehanathani/wise-global-kyc-platform) repository.
+This playbook is the comprehensive preparation guide for the **Senior II / Lead Software Engineer - Global KYC and Onboarding** role in tier-1 global fintechs. It links directly to the architectural principles implemented in the [`global-kyc-onboarding-platform`](https://github.com/snehanathani/global-kyc-onboarding-platform) repository.
 
 ---
 
-## Part 1: Wise Engineering Culture & Squad Philosophy
+## Part 1: Engineering Culture & Squad Philosophy
 
-Wise operates differently from traditional hierarchical banks or top-down tech companies. Understanding these core organizational pillars is mandatory to pass the Lead/Senior II bar:
+Modern high-growth fintechs operate differently from traditional hierarchical banks or top-down enterprises. Understanding these core organizational pillars is mandatory to pass the Lead/Senior II bar:
 
 ### 1. Autonomous Squads & Tribes
-- At Wise, squads are **autonomous, cross-functional mini-startups** (typically 4–8 engineers, 1 Product Manager, 1 Data Analyst, 1 Operations Lead, and embedded Compliance officers).
-- The Global KYC Tribe contains three key squads:
+- Squads are **autonomous, cross-functional mini-startups** (typically 4–8 engineers, 1 Product Manager, 1 Data Analyst, 1 Operations Lead, and embedded Compliance officers).
+- The Global KYC & Verification Tribe contains three key squads:
   1. **Personal Onboarding Verification**: Eliminating friction from consumer identity, selfie biometrics, and proof of address.
   2. **Business Onboarding Verification (KYB)**: Solving complex legal structures, company registries, and Ultimate Beneficial Owners (UBOs).
-  3. **Wise Platform Verification**: Exposing APIs for enterprise partners (Monzo, Interactive Brokers) embedding Wise onboarding.
+  3. **Platform Embedded Verification**: Exposing APIs for enterprise partners embedding verification onboarding rails.
 - **"You build it, you run it"**: The squad owns its microservices from architecture and coding to CI/CD, canary rollouts, alerting, and on-call rotations. There is no separate "Ops" or "DevOps" handover team.
 
 ### 2. Core Cultural Values
@@ -27,10 +27,9 @@ Wise operates differently from traditional hierarchical banks or top-down tech c
 
 ```mermaid
 flowchart LR
-    S1["1. Recruiter Screen<br/>(30-45 min)<br/>Career Narrative & Fit"] --> 
-    S2["2. System Design<br/>(60 min)<br/>Global KYC Architecture"] --> 
-    S3["3. Tech Deep Dive & Coding<br/>(60-75 min)<br/>Java 21, Concurrency, Kafka"] --> 
-    S4["4. Lead & PM Alignment<br/>(60 min)<br/>Culture, PM Collaboration"]
+    S1["1. Recruiter Screen<br/>(30-45 min)<br/>Career Narrative and Fit"] --> S2["2. System Design<br/>(60 min)<br/>Global KYC Architecture"]
+    S2 --> S3["3. Tech Deep Dive and Coding<br/>(60-75 min)<br/>Java 21, Concurrency, Kafka"]
+    S3 --> S4["4. Lead and PM Alignment<br/>(60 min)<br/>Culture and PM Collaboration"]
 ```
 
 ---
@@ -113,17 +112,17 @@ Decompose into domain-driven microservices:
 
 ## Part 5: Working with Product Managers & Cross-Functional Alignment (Stage 4)
 
-In the Wise Lead interview, you will be rigorously tested on how you collaborate with Product Managers, Compliance Officers, and Operations Leads.
+In the Lead interview, you will be rigorously tested on how you collaborate with Product Managers, Compliance Officers, and Operations Leads.
 
 ### Framework 1: Managing the Tension Between Conversion vs Compliance
 - **The Dilemma**: Product Managers want maximum conversion (zero onboarding steps, instant account creation). Compliance Officers want zero regulatory risk (collect passport, selfie, utility bill, proof of wealth for everyone).
 - **The Lead Engineer's Role**:
   - *Data-driven Risk Tiering*: Do not treat all corridors or users identically. A user sending £50 to a family member in Europe should have low-friction Straight-Through-Processing (STP). A user sending £50,000 to a high-risk jurisdiction triggers Enhanced Due Diligence (EDD).
-  - *Measuring Friction with Telemetry*: Quantify drop-off rates at each step. Show the PM and Compliance Lead the exact conversion impact: *"Requiring proof of address for transactions under £5k causes a 18% signup abandonment rate, while historical fraud rate in this cohort is only 0.002%."*
+  - *Measuring Friction with Telemetry*: Quantify drop-off rates at each step. Show the PM and Compliance Lead the exact conversion impact: *"Requiring proof of address for transactions under £5k causes an 18% signup abandonment rate, while historical fraud rate in this cohort is only 0.002%."*
   - *Canary & Shadow Mode Testing*: Test stricter compliance rules silently before enforcing them.
 
 ### Framework 2: Translating Vague Regulatory Directives into Technical Milestones
-- **Scenario**: The UK FCA or EU BaFin issues a directive: *"Firms must implement enhanced monitoring for high-risk cross-border corridors within 90 days."*
+- **Scenario**: Regulators issue a directive: *"Firms must implement enhanced monitoring for high-risk cross-border corridors within 90 days."*
 - **Step-by-Step Approach**:
   1. **Joint Discovery with Compliance & Legal**: Translate vague prose into measurable business rules: What defines "high-risk"? What specific data attributes are required?
   2. **Decompose into an RFC / Architectural Decision Record (ADR)**: Document schema migrations, external vendor API changes, and fallback mechanisms.
@@ -137,21 +136,3 @@ In the Wise Lead interview, you will be rigorously tested on how you collaborate
   - Never frame refactoring as an abstract engineering indulgence. Frame technical debt in **business and product terms**:
     - *"If we launch Latin America on our current database architecture, our connection limits will saturate during Black Friday peak, bringing down European onboarding as well. That represents £1.2M in daily volume at risk."*
   - Propose an incremental architecture plan: Instead of stopping feature work for 6 months, allocate 20–25% of each sprint to decoupling the database using the Expand/Contract pattern while building the new corridor integration in parallel.
-
----
-
-## Part 6: High-Frequency Behavioral & Leadership Questions
-
-### 1. "Tell me about a time you had a major disagreement with your Product Manager. How did you resolve it?"
-- **Structure**: Situation -> Conflict -> Resolution -> Outcome.
-- **Fintech Focus**: Highlight a disagreement over risk vs conversion or launch timelines. Emphasize how you used data, A/B testing, and shadow mode to find a win-win rather than arguing opinions.
-
-### 2. "How do you mentor mid-level engineers to think like system architects?"
-- **Answer**:
-  - Involve them early in writing RFCs and Architectural Decision Records (ADRs).
-  - Pair on failure-mode analysis: Instead of just asking *"Does this code work?"*, ask *"What happens when Kafka brokers rebalance for 15 seconds? What happens when Onfido throws HTTP 503?"*
-  - Give them ownership of end-to-end features including on-call dashboards and SLO definitions.
-
-### 3. "Describe a critical production incident you led. How did you handle recovery and post-mortem?"
-- **Answer**:
-  - Focus on MTTR (Mean Time to Recovery), clear communication during the incident (commander role), engaging circuit breakers/feature flags to stop bleeding, and running a blameless post-mortem focusing on systemic safeguards rather than human error.

@@ -3,9 +3,9 @@ server:
 
 spring:
   application:
-    name: wise-global-kyc-platform
+    name: global-kyc-onboarding-platform
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:wise_kyc_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL}
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:kyc_platform_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL}
     driverClassName: ${SPRING_DATASOURCE_DRIVER:org.h2.Driver}
     username: ${SPRING_DATASOURCE_USERNAME:sa}
     password: ${SPRING_DATASOURCE_PASSWORD:}
@@ -28,7 +28,7 @@ spring:
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
-      group-id: wise-kyc-group
+      group-id: kyc-platform-group
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer

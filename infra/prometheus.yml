@@ -2,7 +2,7 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
-  - job_name: 'wise-global-kyc-platform'
+  - job_name: 'global-kyc-onboarding-platform'
     metrics_path: '/actuator/prometheus'
     static_configs:
       - targets: ['app:8080']

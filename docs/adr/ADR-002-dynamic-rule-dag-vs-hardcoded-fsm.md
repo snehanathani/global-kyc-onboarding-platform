@@ -1,11 +1,11 @@
-# ADR-002: Config-Driven Dynamic Rule DAG vs Hardcoded State Machines for Multi-Jurisdiction KYC
+﻿# ADR-002: Config-Driven Dynamic Rule DAG vs Hardcoded State Machines for Multi-Jurisdiction KYC
 
 ## Status
 **ACCEPTED**
 
 ## Context
-Wise moves money across 160+ countries and 40+ currencies. Regulatory mandates are in continuous flux:
-- **UK FCA (MLR 2017)**: Requires ID + PEP/Sanctions screening; transfers exceeding £10,000 require Enhanced Due Diligence (Proof of Address / Proof of Wealth).
+The platform moves money across 160+ countries and 40+ currencies. Regulatory mandates are in continuous flux:
+- **UK FCA (MLR 2017)**: Requires ID + PEP/Sanctions screening; transfers exceeding Â£10,000 require Enhanced Due Diligence (Proof of Address / Proof of Wealth).
 - **EU AMLD6**: Mandates biometric facial liveness matching, document cryptographic validation (NFC), and cross-border PEP checks.
 - **US FinCEN**: Mandates CIP (Customer Identification Program) with SSN/TIN matching and OFAC list screening.
 - **Singapore MAS**: Requires SingPass API integration or verified utility bill corroboration.

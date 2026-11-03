@@ -1,4 +1,4 @@
-# ADR-004: Polyglot Persistence: PostgreSQL for Relational ACID Integrity and Redis for Distributed Idempotency
+﻿# ADR-004: Polyglot Persistence: PostgreSQL for Relational ACID Integrity and Redis for Distributed Idempotency
 
 ## Status
 **ACCEPTED**

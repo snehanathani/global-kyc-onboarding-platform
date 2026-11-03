@@ -1,12 +1,12 @@
 spring:
   application:
-    name: wise-global-kyc-platform-test
+    name: global-kyc-onboarding-platform-test
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
       - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
   datasource:
-    url: jdbc:h2:mem:wise_kyc_test_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
+    url: jdbc:h2:mem:kyc_platform_test_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
     driverClassName: org.h2.Driver
     username: sa
     password: ''
