@@ -35,3 +35,7 @@ build/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local study notes (not for public repo)
+INTERVIEW_PLAYBOOK.md
+notes/

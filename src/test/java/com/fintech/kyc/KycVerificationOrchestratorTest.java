@@ -3,6 +3,7 @@ package com.fintech.kyc;
 import com.fintech.kyc.domain.model.CustomerType;
 import com.fintech.kyc.domain.model.Jurisdiction;
 import com.fintech.kyc.domain.model.VerificationStatus;
+import com.fintech.kyc.domain.repository.IdempotencyRecordRepository;
 import com.fintech.kyc.dto.InitiateVerificationRequest;
 import com.fintech.kyc.dto.VerificationCaseResponse;
 import com.fintech.kyc.outbox.OutboxMessage;
@@ -27,6 +28,9 @@ class KycVerificationOrchestratorTest {
     @Autowired
     private OutboxMessageRepository outboxRepository;
 
+    @Autowired
+    private IdempotencyRecordRepository idempotencyRecordRepository;
+
     @Test
     @DisplayName("Straight-Through Processing (STP) auto-approves compliant customer and schedules Outbox event")
     void testStraightThroughProcessingAutoApproval() {
@@ -47,18 +51,22 @@ class KycVerificationOrchestratorTest {
         assertNotNull(response);
         assertEquals(VerificationStatus.AUTO_APPROVED, response.status());
         assertTrue(response.straightThroughProcessed());
-        assertEquals(2, response.checks().size()); // Identity + Sanctions
+        assertEquals(2, response.checks().size());
 
         // Verify Transactional Outbox event created
         List<OutboxMessage> outbox = outboxRepository.findByStatus(OutboxMessage.OutboxStatus.PENDING);
         boolean eventFound = outbox.stream()
-                .anyMatch(o -> o.getAggregateId().equals(response.id()) &&
+                .anyMatch(o -> o.getAggregateId().equals(response.customerId()) &&
                                o.getEventType().equals("KYC_VERIFICATION_COMPLETED"));
         assertTrue(eventFound, "Transactional Outbox event KYC_VERIFICATION_COMPLETED must be recorded");
+
+        // Verify L2 durable idempotency record in PostgreSQL
+        assertTrue(idempotencyRecordRepository.existsByIdempotencyKey("idem-key-stp-001"),
+                "Durable idempotency record must exist in PostgreSQL");
     }
 
     @Test
-    @DisplayName("Customer with Sanctions hit is escalated to compliance review queue")
+    @DisplayName("Customer with Sanctions hit is escalated to compliance review queue (Fails Closed)")
     void testSanctionsHitEscalation() {
         InitiateVerificationRequest request = new InitiateVerificationRequest(
                 "cust-sanctions-002",
@@ -82,7 +90,7 @@ class KycVerificationOrchestratorTest {
     }
 
     @Test
-    @DisplayName("High-volume customer (> Â£50k) is routed to manual review")
+    @DisplayName("High-volume customer (> £50k) is routed to manual review")
     void testHighVolumeEscalation() {
         InitiateVerificationRequest request = new InitiateVerificationRequest(
                 "cust-wealth-003",

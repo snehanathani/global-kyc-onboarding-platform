@@ -17,7 +17,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.Optional;
 
 @Service
@@ -58,7 +57,7 @@ public class KycVerificationOrchestrator {
         long startTime = System.currentTimeMillis();
         metricsService.incrementInitiated();
 
-        // 1. Idempotency Check
+        // 1. Dual-Tier Idempotency Check (Redis L1 + PostgreSQL L2 Unique Constraint)
         String idempotencyKey = request.idempotencyKey() != null ?
                 request.idempotencyKey() : "req:" + request.customerId() + ":" + request.jurisdiction();
 
@@ -112,9 +111,10 @@ public class KycVerificationOrchestrator {
         // 5. Straight-Through Processing (STP) Decision
         String eventType;
         if (hasSanctionsHit) {
+            // STRICT INVARIANT: Sanctions hits or vendor failures unconditionally withhold approval
             kycCase.updateStatus(VerificationStatus.MANUAL_REVIEW_REQUIRED);
             kycCase.setStraightThroughProcessed(false);
-            kycCase.setRejectionReason("PEP or Sanctions match detected by screening engine.");
+            kycCase.setRejectionReason("PEP or Sanctions match / check failure detected by screening engine.");
             metricsService.incrementManualReview();
             eventType = "KYC_MANUAL_REVIEW_REQUIRED";
         } else if (outcome.requiresManualReview()) {
@@ -142,7 +142,7 @@ public class KycVerificationOrchestrator {
                 "Case transitioned to " + savedCase.getStatus() + ". StraightThrough=" + savedCase.getStraightThroughProcessed()
         ));
 
-        // 7. Atomic Outbox Event Schedule (Dual-Write Prevention)
+        // 7. Atomic Outbox Event Schedule (Partitioned by customerId to preserve chronological per-customer order)
         KycEventPayload eventPayload = new KycEventPayload(
                 savedCase.getId(),
                 savedCase.getCustomerId(),
@@ -154,7 +154,7 @@ public class KycVerificationOrchestrator {
                 savedCase.getRejectionReason(),
                 Instant.now()
         );
-        outboxService.scheduleEvent("VerificationCase", savedCase.getId(), eventType, eventPayload);
+        outboxService.scheduleEvent("VerificationCase", savedCase.getCustomerId(), eventType, eventPayload);
 
         idempotencyService.markCompleted(idempotencyKey, savedCase.getStatus().name());
         metricsService.recordDuration(System.currentTimeMillis() - startTime);
@@ -189,13 +189,25 @@ public class KycVerificationOrchestrator {
                 check.setCompletedAt(Instant.now());
             }
             case SANCTIONS_AND_PEP -> {
-                VendorClientResponse resp = sanctionsClient.screenSanctionsAndPep(
-                        request.customerId(), request.legalName(), request.jurisdiction().name());
-                check.setVendorName(resp.vendorName());
-                check.setStatus(resp.status());
-                check.setConfidenceScore(resp.confidenceScore());
-                check.setDetails(resp.rawResultDetails());
-                check.setCompletedAt(Instant.now());
+                try {
+                    VendorClientResponse resp = sanctionsClient.screenSanctionsAndPep(
+                            request.customerId(), request.legalName(), request.jurisdiction().name());
+                    check.setVendorName(resp.vendorName());
+                    check.setStatus(resp.status());
+                    check.setConfidenceScore(resp.confidenceScore());
+                    check.setDetails(resp.rawResultDetails());
+                    check.setCompletedAt(Instant.now());
+                } catch (Exception sanctionsEx) {
+                    // STRICT INVARIANT: Sanctions screening NEVER fails open.
+                    // Any timeout, 5xx, or network failure unconditionally flags the check and withholds approval.
+                    log.error("CRITICAL: Sanctions screening provider failure for customer {}. Failing closed.",
+                            request.customerId(), sanctionsEx);
+                    check.setVendorName("SANCTIONS_SCREENING_SERVICE");
+                    check.setStatus(CheckStatus.FLAGGED);
+                    check.setConfidenceScore(0.0);
+                    check.setDetails("Sanctions vendor failure. Quarantined under fail-closed compliance policy: " + sanctionsEx.getMessage());
+                    check.setCompletedAt(Instant.now());
+                }
             }
             case PROOF_OF_ADDRESS -> {
                 check.setVendorName("EXPERIAN_ADDRESS_DATABASE");

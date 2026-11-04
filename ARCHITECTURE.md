@@ -1,19 +1,18 @@
 # Global KYC & Onboarding Decision Platform: Architectural Specification
 
-## 1. Executive Summary & Problem Domain
+## 1. Problem Domain & Scale Framing
 
-The **Global KYC (Know Your Customer) and Onboarding Platform** is the mission-critical gatekeeper of a modern Tier-1 global cross-border financial ecosystem, responsible for verifying identity, determining regulatory compliance, and managing risk across **160+ countries and 40+ currencies**. 
+The **Global KYC (Know Your Customer) and Onboarding Platform** is the reference decision engine modeled on international money movement architectures across multiple regulatory regimes (UK FCA, EU AMLD6, US FinCEN, Singapore MAS).
 
-The platform supports three core squads:
-1. **Personal Onboarding Verification**: Low-friction, high-velocity identity, address, and biometric verification for retail users.
-2. **Business Onboarding Verification (KYB)**: Multi-tier corporate entity verification, Companies House and commercial registry corroboration, and Ultimate Beneficial Owner (UBO $\ge 25\%$) tracking.
-3. **Platform Embedded Verification**: Embedded finance APIs allowing tier-1 banks and neo-brokers to leverage global onboarding rails.
+### Scale & Real-World Framing
+A global fintech onboarding approximately 500,000 customers per month handles an average steady-state throughput of **~0.2 to 2 transactions per second (TPS)**, with peak marketing surges reaching 30–50 TPS.
 
-### Core Architectural Mandates
-- **Straight-Through Processing (STP)**: Target $> 85\%$ instantaneous verification in $< 500\text{ms}$ with zero human intervention.
-- **Extreme Resilience**: 3rd-party vendor outages (Onfido, ComplyAdvantage, Veriff) must never fail customer signups or cause thread starvation.
-- **Zero Data Loss Dual-Write Immunity**: State transitions and downstream Kafka event emission are ACID-guaranteed via the Transactional Outbox pattern.
-- **Config-Driven Multi-Jurisdiction Agility**: Continuous regulatory shifts (UK FCA, EU AMLD6, US FinCEN, SG MAS) are modeled as dynamic Directed Acyclic Graphs (DAGs) supporting zero-risk **Shadow Mode** canary deployments.
+Therefore, the primary architectural challenge in Global KYC is **not raw high-throughput streaming**. Rather, the mission-critical engineering challenges center on:
+1. **Regulatory Correctness & Determinism**: Verifying customers against shifting legal standards without regressions.
+2. **Auditability & Evidentiary Proof**: Maintaining an immutable, tamper-evident chronological log of every rule evaluated, vendor confidence score, and officer decision for FCA/BaFin audits.
+3. **Safe Policy Evolution**: Introducing new compliance checks (e.g. enhanced due diligence thresholds) without breaking live signups, verified via **Shadow Mode** before enforcement.
+4. **Third-Party Fault Isolation**: Decoupling fragile external SaaS vendors (IDV, biometrics, PEP/sanctions) through circuit breakers and active failovers.
+5. **Data Protection & PII Privacy**: Enforcing strict zero-knowledge principles, field-level encryption, and log redaction.
 
 ---
 
@@ -21,7 +20,7 @@ The platform supports three core squads:
 
 ```mermaid
 flowchart TD
-    subgraph ClientLayer["Client and Partner Ingress"]
+    subgraph ClientLayer["Client & Partner Ingress"]
         Web["Web and Portal Applications"]
         Mobile["iOS and Android Native Apps"]
         B2B["Embedded Banking Partner APIs"]
@@ -45,15 +44,15 @@ flowchart TD
     Orchestrator --> ResilienceGw
 
     subgraph DataPersistence["Polyglot Persistence Layer"]
-        Postgres[("PostgreSQL 16 Primary<br/>ACID Entities and Outbox Table")]
-        RedisCache[("Redis 7 Cluster<br/>Idempotency Tokens and Locks")]
+        Postgres[("PostgreSQL 16 Primary<br/>ACID Entities, Audit Logs, Outbox, Durable Idempotency")]
+        RedisCache[("Redis 7 Cluster<br/>L1 Idempotency Tokens and Rate Limits")]
     end
 
     Orchestrator --> Postgres
     Orchestrator --> RedisCache
     OutboxWorker --> Postgres
 
-    subgraph ExternalVendors["External Identity and Compliance Providers"]
+    subgraph ExternalVendors["External Verification Providers (Stubbed)"]
         PrimaryVendor["Primary Vendor Onfido<br/>NFC ID and Biometrics"]
         FallbackVendor["Fallback Vendor Veriff<br/>Active Circuit Failover"]
         SanctionsVendor["Sanctions Screening ComplyAdvantage<br/>OFAC and HMT Watchlists"]
@@ -94,7 +93,7 @@ sequenceDiagram
 
     Customer->>API: POST /api/v1/kyc/verifications (Idempotency Key)
     API->>Orch: initiateAndProcessVerification(request)
-    Orch->>DB: Check Idempotency Token and Persist INITIATED Case
+    Orch->>DB: Check L1/L2 Idempotency Token and Persist INITIATED Case
     Orch->>Rules: evaluateCase(case, existingChecks)
     Rules-->>Orch: Required Checks: ID_DOC, BIOMETRICS, SANCTIONS
     
@@ -123,10 +122,9 @@ sequenceDiagram
 
 ---
 
-## 4. Resilience4j Circuit Breaker & Multi-Tier Failover Lifecycle
+## 4. Resilience4j Circuit Breaker & Failover Policy
 
-In high-throughput fintech, downstream provider failures are inevitable. The gateway implements a 3-tier failure mitigation strategy:
-
+### Circuit Breaker State Transitions
 ```mermaid
 stateDiagram-v2
     [*] --> Closed: Initial State
@@ -155,34 +153,26 @@ stateDiagram-v2
     HalfOpen --> Open: ProbeFail - Remain on Veriff fallback
 ```
 
-### Fallback Guarantee
-1. **Tier 1 (Normal Operations)**: Primary identity vendor (Onfido) validates documents & biometrics.
-2. **Tier 2 (Circuit Tripped / Timeout)**: Resilience4j intercepts failure, executes fallback method, and routes seamlessly to secondary vendor (Veriff). Customer experiences zero disruption.
-3. **Tier 3 (Multi-Vendor Outage)**: If both vendors fail, status transitions gracefully to `PENDING_VENDOR` and is queued for background retries. Customer signup does not crash with a 500.
+### The Sanctions Invariant: Fail-Closed
+A critical architectural distinction exists between document verification and sanctions screening:
+* **Identity Documents (Fail-Over Allowed)**: If Onfido fails, traffic safely fails over to Veriff or queues asynchronously.
+* **Sanctions & PEP (Fail-Closed Strictly)**: Sanctions screening **must never fail open**. If the sanctions provider times out, throws a 5xx, or experiences a network partition, the verification check is unconditionally flagged, straight-through approval is withheld, and the case is quarantined for manual review.
 
 ---
 
-## 5. CAP / PACELC Architectural Analysis & Latency Budgets
+## 5. Data Protection, PII & Regulatory Auditing
 
-| Property | Choice | Rationale |
-| :--- | :--- | :--- |
-| **CAP Theorem** | **CP** (Consistency / Partition Tolerance) | In financial compliance, verifying sanctions and regulatory identity requires strict correctness over dirty reads. A customer cannot be approved based on stale sanctions data. |
-| **PACELC Theorem** | **PC/EC** (Partition: Consistency; Else: Consistency) | Under normal operations, write operations prioritize consistency to prevent duplicate onboarding. Reads (status queries) leverage read replicas with eventual consistency ($< 50\text{ms}$ replication lag). |
-
-### Latency Budget (Target: $< 500\text{ms}$ p99)
-- Gateway Authentication & Ingress: $15\text{ms}$
-- Redis Idempotency Token Acquisition: $2\text{ms}$
-- Dynamic Rule DAG Evaluation: $5\text{ms}$
-- Parallel External Vendor Calls (Bulkhead Isolated): $380\text{ms}$
-- PostgreSQL ACID Commit (Case + Audit + Outbox): $18\text{ms}$
-- **Total End-to-End Latency**: $\approx 420\text{ms}$
+1. **Field-Level Encryption**: Sensitive identifiers (passport numbers, national tax IDs, SSNs) are encrypted at rest using AES-256 before database insertion.
+2. **Log Redaction**: Standard log appenders sanitize PII to prevent customer credentials or biometric identifiers from leaking into ELK/Splunk logs.
+3. **Immutable Audit Trails**: The `compliance_audit_logs` table records every actor, rule evaluation rationale, and status transition with UTC timestamps for FCA/BaFin regulatory reporting.
+4. **Dual-Tier Idempotency**: Redis L1 cache absorbs high-frequency network retries ($< 1\text{ms}$), backed by a durable PostgreSQL unique constraint (`uk_idempotency_key`) to guarantee consistency across cache evictions and node restarts.
 
 ---
 
 ## 6. Zero-Downtime Database Migrations (Expand/Contract Pattern)
 
-High-frequency CI/CD deployments require zero-downtime database schema updates following the **Expand / Contract (Parallel Run)** pattern:
-1. **Expand Phase**: Add new nullable columns or tables (e.g. `aggregate_risk_score`). Existing application code continues functioning uninterrupted.
-2. **Dual-Write Phase**: Deploy new application version that writes to both legacy and new structures while reading from legacy.
+Schema updates follow the **Expand / Contract (Parallel Run)** pattern:
+1. **Expand Phase**: Add new nullable columns or tables. Application continues running uninterrupted.
+2. **Dual-Write Phase**: Deploy application version writing to both old and new columns.
 3. **Backfill Phase**: Asynchronous batch job backfills historical data.
-4. **Contract Phase**: Application switches read path to new structures; legacy column is dropped safely in a subsequent release.
+4. **Contract Phase**: Read path switched to new column; legacy column deprecated and dropped in a subsequent release.
