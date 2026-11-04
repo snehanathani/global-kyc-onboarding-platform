@@ -19,7 +19,7 @@ public class UkFcaVerificationRule implements KycRule {
 
     @Override
     public String getDescription() {
-        return "UK FCA MLR 2017: Customer Due Diligence (ID + Sanctions, plus Proof of Address for volume > Â£10,000)";
+        return "UK FCA MLR 2017: Customer Due Diligence (ID + Sanctions, plus Proof of Address for volume > GBP 10,000)";
     }
 
     @Override

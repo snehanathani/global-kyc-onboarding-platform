@@ -48,7 +48,7 @@ class RuleEngineTest {
     }
 
     @Test
-    @DisplayName("UK Individual with high volume (> Â£10,000) triggers Enhanced Due Diligence (Proof of Address)")
+    @DisplayName("UK Individual with high volume (> GBP 10,000) triggers Enhanced Due Diligence (Proof of Address)")
     void testUkIndividualEnhancedDueDiligence() {
         VerificationCase kycCase = new VerificationCase(
                 "cust-uk-102",
@@ -102,7 +102,7 @@ class RuleEngineTest {
     }
 
     @Test
-    @DisplayName("Volume exceeding Â£50,000 automatically escalates to compliance officer manual review")
+    @DisplayName("Volume exceeding GBP 50,000 automatically escalates to compliance officer manual review")
     void testHighRiskVolumeEscalation() {
         VerificationCase kycCase = new VerificationCase(
                 "cust-high-risk-401",

@@ -2,98 +2,101 @@ package com.fintech.kyc.service;
 
 import com.fintech.kyc.domain.model.IdempotencyRecord;
 import com.fintech.kyc.domain.repository.IdempotencyRecordRepository;
+import com.fintech.kyc.service.exception.IdempotencyConflictException;
+import com.fintech.kyc.service.exception.IdempotencyPayloadMismatchException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class IdempotencyService {
 
     private static final Logger log = LoggerFactory.getLogger(IdempotencyService.class);
-    private static final Duration L1_TTL = Duration.ofHours(24);
 
-    private final StringRedisTemplate redisTemplate;
     private final IdempotencyRecordRepository recordRepository;
-    private final ConcurrentHashMap<String, String> inMemoryFallbackCache = new ConcurrentHashMap<>();
 
-    public IdempotencyService(
-            @Autowired(required = false) StringRedisTemplate redisTemplate,
-            IdempotencyRecordRepository recordRepository) {
-        this.redisTemplate = redisTemplate;
+    public IdempotencyService(IdempotencyRecordRepository recordRepository) {
         this.recordRepository = recordRepository;
     }
 
-    /**
-     * Dual-tier idempotency acquisition:
-     * 1. Check L1 in-memory / Redis cache for sub-millisecond fast rejection of duplicates.
-     * 2. Insert into L2 durable PostgreSQL table with unique constraint to guarantee durability across Redis restarts.
-     */
-    @Transactional
-    public boolean acquireLockOrToken(String idempotencyKey) {
-        String redisKey = "idempotency:" + idempotencyKey;
-
-        // --- Tier 1: Fast L1 Cache Check ---
-        if (redisTemplate != null) {
-            try {
-                Boolean isNew = redisTemplate.opsForValue().setIfAbsent(redisKey, "PROCESSING", L1_TTL);
-                if (Boolean.FALSE.equals(isNew)) {
-                    log.debug("L1 Redis cache hit: duplicate request for key {}", idempotencyKey);
-                    return false;
-                }
-            } catch (Exception e) {
-                log.warn("Redis unavailable for L1 check. Falling back to local cache: {}", e.getMessage());
-                if (inMemoryFallbackCache.putIfAbsent(redisKey, "PROCESSING") != null) {
-                    return false;
-                }
-            }
-        } else {
-            if (inMemoryFallbackCache.putIfAbsent(redisKey, "PROCESSING") != null) {
-                return false;
-            }
+    public record IdempotencyResult(
+            boolean shouldProceed,
+            String completedResponsePayload
+    ) {
+        public static IdempotencyResult proceed() {
+            return new IdempotencyResult(true, null);
         }
 
-        // --- Tier 2: Durable L2 Relational Check in PostgreSQL ---
-        try {
-            if (recordRepository.existsByIdempotencyKey(idempotencyKey)) {
-                log.debug("L2 PostgreSQL hit: idempotency key {} already exists in database.", idempotencyKey);
-                return false;
-            }
-            recordRepository.save(new IdempotencyRecord(idempotencyKey, "PROCESSING"));
-            return true;
-        } catch (DataIntegrityViolationException dive) {
-            log.warn("L2 unique constraint caught concurrent duplicate for key: {}", idempotencyKey);
-            return false;
+        public static IdempotencyResult replay(String payload) {
+            return new IdempotencyResult(false, payload);
         }
     }
 
-    @Transactional
-    public void markCompleted(String idempotencyKey, String outcome) {
-        String redisKey = "idempotency:" + idempotencyKey;
+    /**
+     * Executes in an isolated, immediate transaction.
+     * Guarantees that concurrent requests for the same idempotency key block or fail with HTTP 409 Conflict,
+     * while different payloads under the same key fail with HTTP 422 Unprocessable Entity.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public IdempotencyResult acquireKey(String idempotencyKey, String requestHash) {
+        Optional<IdempotencyRecord> existingOpt = recordRepository.findByIdempotencyKey(idempotencyKey);
 
-        // Update L1
-        if (redisTemplate != null) {
-            try {
-                redisTemplate.opsForValue().set(redisKey, outcome, L1_TTL);
-            } catch (Exception e) {
-                log.warn("Failed to store completion state in Redis: {}", e.getMessage());
+        if (existingOpt.isPresent()) {
+            IdempotencyRecord existing = existingOpt.get();
+
+            // Guard: Payload mismatch
+            if (!existing.getRequestHash().equals(requestHash)) {
+                log.warn("Idempotency key {} reused with different request payload hash.", idempotencyKey);
+                throw new IdempotencyPayloadMismatchException(
+                        "Idempotency key '" + idempotencyKey + "' was previously used with a different request payload.");
+            }
+
+            // Guard: In flight concurrent request
+            if (existing.getStatus() == IdempotencyRecord.Status.IN_PROGRESS) {
+                log.warn("Concurrent in-flight duplicate detected for idempotency key {}", idempotencyKey);
+                throw new IdempotencyConflictException(
+                        "A request with idempotency key '" + idempotencyKey + "' is currently in progress. Please retry shortly.");
+            }
+
+            // Completed: Safe replay of stored response
+            if (existing.getStatus() == IdempotencyRecord.Status.COMPLETED) {
+                log.info("Idempotent replay: returning stored response for key {}", idempotencyKey);
+                return IdempotencyResult.replay(existing.getResponsePayload());
             }
         }
-        inMemoryFallbackCache.put(redisKey, outcome);
 
-        // Update L2 durable store
-        Optional<IdempotencyRecord> recordOpt = recordRepository.findByIdempotencyKey(idempotencyKey);
-        recordOpt.ifPresent(record -> {
-            record.setStatus(outcome);
+        // Claim key atomically
+        try {
+            IdempotencyRecord newRecord = new IdempotencyRecord(idempotencyKey, requestHash);
+            recordRepository.saveAndFlush(newRecord);
+            return IdempotencyResult.proceed();
+        } catch (DataIntegrityViolationException dive) {
+            log.warn("Concurrent unique constraint race for key: {}", idempotencyKey);
+            throw new IdempotencyConflictException(
+                    "A request with idempotency key '" + idempotencyKey + "' was claimed concurrently.");
+        }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markCompleted(String idempotencyKey, String serializedResponse) {
+        recordRepository.findByIdempotencyKey(idempotencyKey).ifPresent(record -> {
+            record.setStatus(IdempotencyRecord.Status.COMPLETED);
+            record.setResponsePayload(serializedResponse);
             record.setCompletedAt(Instant.now());
+            recordRepository.save(record);
+        });
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markFailed(String idempotencyKey) {
+        recordRepository.findByIdempotencyKey(idempotencyKey).ifPresent(record -> {
+            record.setStatus(IdempotencyRecord.Status.FAILED);
             recordRepository.save(record);
         });
     }

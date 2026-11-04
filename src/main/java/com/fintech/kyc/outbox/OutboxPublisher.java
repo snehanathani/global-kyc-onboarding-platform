@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class OutboxPublisher {
@@ -25,21 +26,24 @@ public class OutboxPublisher {
         this.kafkaTemplate = kafkaTemplate;
     }
 
-    @Scheduled(fixedDelay = 2000) // Poll every 2 seconds for pending outbox events
+    @Scheduled(fixedDelay = 2000)
     @Transactional
     public void publishPendingEvents() {
-        List<OutboxMessage> pending = outboxRepository.findPendingMessagesToPublish();
+        List<OutboxMessage> pending = outboxRepository.findPendingMessagesToPublishWithLock();
         if (pending.isEmpty()) {
             return;
         }
 
-        log.debug("Found {} pending Outbox messages to publish to Kafka", pending.size());
+        log.debug("Processing {} locked Outbox messages for Kafka dispatch", pending.size());
 
         for (OutboxMessage msg : pending) {
             String topic = resolveTopic(msg.getEventType());
             try {
                 if (kafkaTemplate != null) {
-                    kafkaTemplate.send(topic, msg.getAggregateId(), msg.getPayloadJson());
+                    // Synchronously wait on the broker acknowledgement future (5 second timeout)
+                    // This guarantees At-Least-Once delivery and eliminates silent event loss
+                    kafkaTemplate.send(topic, msg.getAggregateId(), msg.getPayloadJson())
+                            .get(5, TimeUnit.SECONDS);
                 } else {
                     log.info("[EMULATED KAFKA DISPATCH] Topic='{}', Key='{}', Payload={}",
                             topic, msg.getAggregateId(), msg.getPayloadJson());
@@ -47,7 +51,7 @@ public class OutboxPublisher {
                 msg.setStatus(OutboxMessage.OutboxStatus.PUBLISHED);
                 msg.setProcessedAt(Instant.now());
                 outboxRepository.save(msg);
-                log.info("Outbox message {} published successfully to topic '{}'", msg.getId(), topic);
+                log.info("Outbox message {} acknowledged by broker on topic '{}'", msg.getId(), topic);
             } catch (Exception e) {
                 msg.incrementRetry();
                 msg.setLastError(e.getMessage());
@@ -55,7 +59,7 @@ public class OutboxPublisher {
                     msg.setStatus(OutboxMessage.OutboxStatus.FAILED);
                     log.error("Outbox message {} exceeded max retries. Marked as FAILED.", msg.getId(), e);
                 } else {
-                    log.warn("Failed to publish outbox message {}. Retrying later (attempt {})",
+                    log.warn("Failed to publish outbox message {}. Scheduled for retry (attempt {})",
                             msg.getId(), msg.getRetryCount(), e);
                 }
                 outboxRepository.save(msg);

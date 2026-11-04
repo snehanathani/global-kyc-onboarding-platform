@@ -1,5 +1,7 @@
 package com.fintech.kyc.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.kyc.domain.model.*;
 import com.fintech.kyc.domain.repository.ComplianceAuditLogRepository;
 import com.fintech.kyc.domain.repository.VerificationCaseRepository;
@@ -14,10 +16,16 @@ import com.fintech.kyc.rules.DynamicRuleEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
-import java.util.Optional;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.List;
 
 @Service
 public class KycVerificationOrchestrator {
@@ -32,6 +40,8 @@ public class KycVerificationOrchestrator {
     private final OutboxService outboxService;
     private final IdempotencyService idempotencyService;
     private final KycMetricsService metricsService;
+    private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
 
     public KycVerificationOrchestrator(
             VerificationCaseRepository caseRepository,
@@ -41,7 +51,9 @@ public class KycVerificationOrchestrator {
             SanctionsVendorClient sanctionsClient,
             OutboxService outboxService,
             IdempotencyService idempotencyService,
-            KycMetricsService metricsService) {
+            KycMetricsService metricsService,
+            ObjectMapper objectMapper,
+            PlatformTransactionManager transactionManager) {
         this.caseRepository = caseRepository;
         this.auditRepository = auditRepository;
         this.ruleEngine = ruleEngine;
@@ -50,120 +62,179 @@ public class KycVerificationOrchestrator {
         this.outboxService = outboxService;
         this.idempotencyService = idempotencyService;
         this.metricsService = metricsService;
+        this.objectMapper = objectMapper;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
-    @Transactional
+    /**
+     * Orchestrates end-to-end customer onboarding verification.
+     * Architectural Invariant: External 3rd-party network calls run OUTSIDE the database transaction
+     * to prevent database connection pool exhaustion during vendor latency spikes.
+     */
     public VerificationCaseResponse initiateAndProcessVerification(InitiateVerificationRequest request) {
         long startTime = System.currentTimeMillis();
         metricsService.incrementInitiated();
 
-        // 1. Dual-Tier Idempotency Check (Redis L1 + PostgreSQL L2 Unique Constraint)
         String idempotencyKey = request.idempotencyKey() != null ?
                 request.idempotencyKey() : "req:" + request.customerId() + ":" + request.jurisdiction();
 
-        if (!idempotencyService.acquireLockOrToken(idempotencyKey)) {
-            log.warn("Duplicate request detected for idempotencyKey: {}. Returning existing record if present.", idempotencyKey);
-            Optional<VerificationCase> existing = caseRepository.findByCustomerId(request.customerId());
-            if (existing.isPresent()) {
-                return VerificationCaseResponse.fromEntity(existing.get());
+        String requestHash = computeSha256(request);
+
+        // --- Step 1: Atomic Idempotency Claim (REQUIRES_NEW transaction) ---
+        IdempotencyService.IdempotencyResult idemResult = idempotencyService.acquireKey(idempotencyKey, requestHash);
+        if (!idemResult.shouldProceed()) {
+            try {
+                return objectMapper.readValue(idemResult.completedResponsePayload(), VerificationCaseResponse.class);
+            } catch (JsonProcessingException e) {
+                log.error("Failed to deserialize cached idempotency response: {}", e.getMessage());
             }
         }
 
-        // 2. Initialize Case
-        VerificationCase kycCase = new VerificationCase(
-                request.customerId(),
-                request.customerType(),
-                request.jurisdiction(),
-                request.legalName(),
-                request.registrationOrTaxId(),
-                request.expectedAnnualVolumeGbp()
-        );
-        kycCase = caseRepository.save(kycCase);
-        auditRepository.save(new ComplianceAuditLog(
-                kycCase.getId(), "SYSTEM", "CASE_INITIATED",
-                "Verification case registered for customer " + request.customerId() + " under jurisdiction " + request.jurisdiction()
-        ));
+        try {
+            // --- Step 2: Persist Initial Case State (Short Transaction) ---
+            String caseId = transactionTemplate.execute(status -> {
+                VerificationCase kycCase = new VerificationCase(
+                        request.customerId(),
+                        request.customerType(),
+                        request.jurisdiction(),
+                        request.legalName(),
+                        request.registrationOrTaxId(),
+                        request.expectedAnnualVolumeGbp()
+                );
+                kycCase.setStatus(VerificationStatus.IN_PROGRESS);
+                kycCase = caseRepository.save(kycCase);
 
-        // 3. Dynamic Rule Evaluation DAG
-        DynamicRuleEngine.EngineDecisionOutcome outcome = ruleEngine.evaluateCase(kycCase, kycCase.getChecks());
-        kycCase.setAggregateRiskScore(outcome.aggregateRiskScore());
+                auditRepository.save(new ComplianceAuditLog(
+                        kycCase.getId(), "SYSTEM", "CASE_INITIATED",
+                        "Verification case registered for customer " + request.customerId() + " under jurisdiction " + request.jurisdiction()
+                ));
+                return kycCase.getId();
+            });
 
-        // 4. Execute Required Vendor Checks with Circuit Breakers & Resilience
-        boolean allChecksSucceeded = true;
-        boolean hasSanctionsHit = false;
+            // --- Step 3: Dynamic Rule Evaluation (In-Memory DAG) ---
+            VerificationCase tempCase = new VerificationCase(
+                    request.customerId(), request.customerType(), request.jurisdiction(),
+                    request.legalName(), request.registrationOrTaxId(), request.expectedAnnualVolumeGbp()
+            );
+            tempCase.setId(caseId);
+            DynamicRuleEngine.EngineDecisionOutcome outcome = ruleEngine.evaluateCase(tempCase, List.of());
 
-        for (CheckType checkType : outcome.pendingChecksToExecute()) {
-            VerificationCheck check = executeCheckWithResilience(kycCase, checkType, request);
-            kycCase.addCheck(check);
+            // --- Step 4: Execute External Vendor Checks OUTSIDE Database Transaction ---
+            List<VerificationCheck> executedChecks = new ArrayList<>();
+            for (CheckType checkType : outcome.pendingChecksToExecute()) {
+                VerificationCheck check = executeCheckWithResilience(caseId, checkType, request);
+                executedChecks.add(check);
+            }
 
-            if (check.getStatus() == CheckStatus.FLAGGED) {
-                allChecksSucceeded = false;
-                if (checkType == CheckType.SANCTIONS_AND_PEP) {
-                    hasSanctionsHit = true;
+            // --- Step 5: Finalize Case, Emit Outbox Event & Audit Log (Transactional) ---
+            VerificationCaseResponse response = transactionTemplate.execute(status -> {
+                VerificationCase kycCase = caseRepository.findById(caseId)
+                        .orElseThrow(() -> new IllegalStateException("Verification case not found: " + caseId));
+
+                kycCase.setAggregateRiskScore(outcome.aggregateRiskScore());
+
+                boolean allChecksSucceeded = true;
+                boolean hasPendingVendor = false;
+                boolean hasSanctionsHit = false;
+
+                for (VerificationCheck check : executedChecks) {
+                    kycCase.addCheck(check);
+
+                    // Strict Invariant: Check is only valid if explicitly passed
+                    if (check.getStatus() == CheckStatus.PASSED) {
+                        // Success
+                    } else if (check.getStatus() == CheckStatus.FALLBACK_VENDOR_USED) {
+                        metricsService.incrementFallbackEngaged();
+                    } else if (check.getStatus() == CheckStatus.PENDING_VENDOR) {
+                        allChecksSucceeded = false;
+                        hasPendingVendor = true;
+                    } else {
+                        // FLAGGED or FAILED
+                        allChecksSucceeded = false;
+                        if (check.getCheckType() == CheckType.SANCTIONS_AND_PEP) {
+                            hasSanctionsHit = true;
+                        }
+                    }
                 }
-            } else if (check.getStatus() == CheckStatus.FAILED) {
-                allChecksSucceeded = false;
-            } else if (check.getStatus() == CheckStatus.FALLBACK_VENDOR_USED) {
-                metricsService.incrementFallbackEngaged();
+
+                // Decision logic
+                String eventType;
+                if (hasSanctionsHit) {
+                    kycCase.updateStatus(VerificationStatus.MANUAL_REVIEW_REQUIRED);
+                    kycCase.setStraightThroughProcessed(false);
+                    kycCase.setRejectionReason("PEP or Sanctions watchlist match / verification failure.");
+                    metricsService.incrementManualReview();
+                    eventType = "KYC_MANUAL_REVIEW_REQUIRED";
+                } else if (hasPendingVendor) {
+                    // Invariant: Double vendor outage NEVER auto-approves
+                    kycCase.updateStatus(VerificationStatus.PENDING);
+                    kycCase.setStraightThroughProcessed(false);
+                    kycCase.setRejectionReason("External verification providers temporarily unavailable; queued for asynchronous background completion.");
+                    metricsService.incrementManualReview();
+                    eventType = "KYC_MANUAL_REVIEW_REQUIRED";
+                } else if (outcome.requiresManualReview()) {
+                    kycCase.updateStatus(VerificationStatus.MANUAL_REVIEW_REQUIRED);
+                    kycCase.setStraightThroughProcessed(false);
+                    kycCase.setRejectionReason(String.join("; ", outcome.auditRationales()));
+                    metricsService.incrementManualReview();
+                    eventType = "KYC_MANUAL_REVIEW_REQUIRED";
+                } else if (allChecksSucceeded) {
+                    kycCase.updateStatus(VerificationStatus.AUTO_APPROVED);
+                    kycCase.setStraightThroughProcessed(true);
+                    metricsService.incrementAutoApproved();
+                    eventType = "KYC_VERIFICATION_COMPLETED";
+                } else {
+                    kycCase.updateStatus(VerificationStatus.MANUAL_REVIEW_REQUIRED);
+                    kycCase.setStraightThroughProcessed(false);
+                    metricsService.incrementManualReview();
+                    eventType = "KYC_MANUAL_REVIEW_REQUIRED";
+                }
+
+                VerificationCase savedCase = caseRepository.save(kycCase);
+
+                auditRepository.save(new ComplianceAuditLog(
+                        savedCase.getId(), "SYSTEM", savedCase.getStatus().name(),
+                        "Case finalized with status " + savedCase.getStatus() + ". StraightThrough=" + savedCase.getStraightThroughProcessed()
+                ));
+
+                // Atomic Outbox Event Schedule (Partitioned by customerId)
+                KycEventPayload eventPayload = new KycEventPayload(
+                        savedCase.getId(),
+                        savedCase.getCustomerId(),
+                        savedCase.getCustomerType(),
+                        savedCase.getJurisdiction(),
+                        savedCase.getStatus(),
+                        savedCase.getAggregateRiskScore(),
+                        Boolean.TRUE.equals(savedCase.getStraightThroughProcessed()),
+                        savedCase.getRejectionReason(),
+                        Instant.now()
+                );
+                outboxService.scheduleEvent("VerificationCase", savedCase.getCustomerId(), eventType, eventPayload);
+
+                metricsService.recordDuration(System.currentTimeMillis() - startTime);
+
+                return VerificationCaseResponse.fromEntity(savedCase);
+            });
+
+            // --- Step 6: Mark Idempotency Record Completed with Serialized Response ---
+            try {
+                String responseJson = objectMapper.writeValueAsString(response);
+                idempotencyService.markCompleted(idempotencyKey, responseJson);
+            } catch (JsonProcessingException e) {
+                log.warn("Failed to serialize response for idempotency storage: {}", e.getMessage());
             }
+
+            return response;
+
+        } catch (Exception e) {
+            log.error("Verification processing failed for customerId={}. Releasing idempotency lock.", request.customerId(), e);
+            idempotencyService.markFailed(idempotencyKey);
+            throw e;
         }
-
-        // 5. Straight-Through Processing (STP) Decision
-        String eventType;
-        if (hasSanctionsHit) {
-            // STRICT INVARIANT: Sanctions hits or vendor failures unconditionally withhold approval
-            kycCase.updateStatus(VerificationStatus.MANUAL_REVIEW_REQUIRED);
-            kycCase.setStraightThroughProcessed(false);
-            kycCase.setRejectionReason("PEP or Sanctions match / check failure detected by screening engine.");
-            metricsService.incrementManualReview();
-            eventType = "KYC_MANUAL_REVIEW_REQUIRED";
-        } else if (outcome.requiresManualReview()) {
-            kycCase.updateStatus(VerificationStatus.MANUAL_REVIEW_REQUIRED);
-            kycCase.setStraightThroughProcessed(false);
-            kycCase.setRejectionReason(String.join("; ", outcome.auditRationales()));
-            metricsService.incrementManualReview();
-            eventType = "KYC_MANUAL_REVIEW_REQUIRED";
-        } else if (allChecksSucceeded) {
-            kycCase.updateStatus(VerificationStatus.AUTO_APPROVED);
-            kycCase.setStraightThroughProcessed(true);
-            metricsService.incrementAutoApproved();
-            eventType = "KYC_VERIFICATION_COMPLETED";
-        } else {
-            kycCase.updateStatus(VerificationStatus.MANUAL_REVIEW_REQUIRED);
-            kycCase.setStraightThroughProcessed(false);
-            metricsService.incrementManualReview();
-            eventType = "KYC_MANUAL_REVIEW_REQUIRED";
-        }
-
-        // 6. Persist Updated Case & Audit Trail
-        VerificationCase savedCase = caseRepository.save(kycCase);
-        auditRepository.save(new ComplianceAuditLog(
-                savedCase.getId(), "SYSTEM", savedCase.getStatus().name(),
-                "Case transitioned to " + savedCase.getStatus() + ". StraightThrough=" + savedCase.getStraightThroughProcessed()
-        ));
-
-        // 7. Atomic Outbox Event Schedule (Partitioned by customerId to preserve chronological per-customer order)
-        KycEventPayload eventPayload = new KycEventPayload(
-                savedCase.getId(),
-                savedCase.getCustomerId(),
-                savedCase.getCustomerType(),
-                savedCase.getJurisdiction(),
-                savedCase.getStatus(),
-                savedCase.getAggregateRiskScore(),
-                Boolean.TRUE.equals(savedCase.getStraightThroughProcessed()),
-                savedCase.getRejectionReason(),
-                Instant.now()
-        );
-        outboxService.scheduleEvent("VerificationCase", savedCase.getCustomerId(), eventType, eventPayload);
-
-        idempotencyService.markCompleted(idempotencyKey, savedCase.getStatus().name());
-        metricsService.recordDuration(System.currentTimeMillis() - startTime);
-
-        return VerificationCaseResponse.fromEntity(savedCase);
     }
 
     private VerificationCheck executeCheckWithResilience(
-            VerificationCase kycCase, CheckType checkType, InitiateVerificationRequest request) {
+            String caseId, CheckType checkType, InitiateVerificationRequest request) {
 
         VerificationCheck check = new VerificationCheck(checkType, "PENDING");
 
@@ -198,8 +269,6 @@ public class KycVerificationOrchestrator {
                     check.setDetails(resp.rawResultDetails());
                     check.setCompletedAt(Instant.now());
                 } catch (Exception sanctionsEx) {
-                    // STRICT INVARIANT: Sanctions screening NEVER fails open.
-                    // Any timeout, 5xx, or network failure unconditionally flags the check and withholds approval.
                     log.error("CRITICAL: Sanctions screening provider failure for customer {}. Failing closed.",
                             request.customerId(), sanctionsEx);
                     check.setVendorName("SANCTIONS_SCREENING_SERVICE");
@@ -232,5 +301,20 @@ public class KycVerificationOrchestrator {
             }
         }
         return check;
+    }
+
+    private String computeSha256(InitiateVerificationRequest request) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            String raw = request.customerId() + ":" +
+                         request.customerType() + ":" +
+                         request.jurisdiction() + ":" +
+                         request.legalName() + ":" +
+                         request.expectedAnnualVolumeGbp();
+            byte[] hash = digest.digest(raw.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
     }
 }

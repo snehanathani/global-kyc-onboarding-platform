@@ -21,7 +21,7 @@ public class OutboxService {
         this.objectMapper = objectMapper;
     }
 
-    @Transactional(propagation = Propagation.MANDATORY) // Must participate in calling transaction
+    @Transactional(propagation = Propagation.REQUIRED)
     public OutboxMessage scheduleEvent(String aggregateType, String aggregateId, String eventType, Object payload) {
         try {
             String payloadJson = objectMapper.writeValueAsString(payload);

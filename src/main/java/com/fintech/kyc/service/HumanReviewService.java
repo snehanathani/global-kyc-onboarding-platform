@@ -1,5 +1,7 @@
 package com.fintech.kyc.service;
 
+import com.fintech.kyc.domain.model.CheckStatus;
+import com.fintech.kyc.domain.model.CheckType;
 import com.fintech.kyc.domain.model.ComplianceAuditLog;
 import com.fintech.kyc.domain.model.VerificationCase;
 import com.fintech.kyc.domain.model.VerificationStatus;
@@ -47,12 +49,22 @@ public class HumanReviewService {
         VerificationCase kycCase = caseRepository.findById(caseId)
                 .orElseThrow(() -> new IllegalArgumentException("Case not found: " + caseId));
 
+        // Guard 1: State Precondition
+        if (kycCase.getStatus() != VerificationStatus.MANUAL_REVIEW_REQUIRED) {
+            throw new IllegalStateException("Only cases in MANUAL_REVIEW_REQUIRED state can be claimed. Current state: " + kycCase.getStatus());
+        }
+
+        // Guard 2: Agent Claim Collision Protection (First-claim wins)
+        if (kycCase.getAssignedAgentId() != null && !kycCase.getAssignedAgentId().equals(agentId)) {
+            throw new IllegalStateException("Case is already claimed by compliance officer: " + kycCase.getAssignedAgentId());
+        }
+
         kycCase.setAssignedAgentId(agentId);
         VerificationCase saved = caseRepository.save(kycCase);
 
         auditRepository.save(new ComplianceAuditLog(
                 caseId, agentId, "CASE_CLAIMED",
-                "Compliance officer " + agentId + " claimed case for investigation"
+                "Compliance officer " + agentId + " claimed ownership of review case"
         ));
 
         return VerificationCaseResponse.fromEntity(saved);
@@ -63,12 +75,29 @@ public class HumanReviewService {
         VerificationCase kycCase = caseRepository.findById(caseId)
                 .orElseThrow(() -> new IllegalArgumentException("Case not found: " + caseId));
 
+        // Guard 1: State Precondition (Cannot decide on already closed or pending cases)
+        if (kycCase.getStatus() != VerificationStatus.MANUAL_REVIEW_REQUIRED) {
+            throw new IllegalStateException("Case cannot be decided: current status is " + kycCase.getStatus());
+        }
+
+        // Guard 2: Assignee Integrity (Only the assigned officer can finalize)
+        if (kycCase.getAssignedAgentId() != null && !kycCase.getAssignedAgentId().equals(request.agentId())) {
+            throw new IllegalStateException("Unauthorized: Case is assigned to " + kycCase.getAssignedAgentId() + ", not " + request.agentId());
+        }
+
+        // Guard 3: Sanctions Four-Eyes Requirement
+        boolean hasFlaggedSanctions = kycCase.getChecks().stream()
+                .anyMatch(c -> c.getCheckType() == CheckType.SANCTIONS_AND_PEP && c.getStatus() == CheckStatus.FLAGGED);
+
         String action = request.action().toUpperCase();
         VerificationStatus finalStatus;
         String eventType;
 
         if ("APPROVE".equals(action)) {
-            finalStatus = VerificationStatus.AUTO_APPROVED; // Overridden to approved
+            if (hasFlaggedSanctions && !request.justificationReason().toUpperCase().contains("FOUR_EYES_VERIFIED")) {
+                throw new IllegalStateException("Sanctions match override requires explicit FOUR_EYES_VERIFIED confirmation in justification.");
+            }
+            finalStatus = VerificationStatus.MANUALLY_APPROVED; // Distinct from AUTO_APPROVED to protect STP metrics
             eventType = "KYC_VERIFICATION_COMPLETED";
             kycCase.setRejectionReason(null);
         } else if ("REJECT".equals(action)) {
@@ -86,10 +115,10 @@ public class HumanReviewService {
         // Immutable compliance audit trail
         auditRepository.save(new ComplianceAuditLog(
                 caseId, request.agentId(), "AGENT_DECISION_" + action,
-                "Justification: " + request.justificationReason()
+                "Action: " + action + ". Justification: " + request.justificationReason()
         ));
 
-        // Atomic Outbox Event Schedule
+        // Atomic Outbox Event Schedule (Partitioned by customerId for ordered streaming)
         KycEventPayload payload = new KycEventPayload(
                 saved.getId(),
                 saved.getCustomerId(),
@@ -101,7 +130,7 @@ public class HumanReviewService {
                 request.justificationReason(),
                 Instant.now()
         );
-        outboxService.scheduleEvent("VerificationCase", saved.getId(), eventType, payload);
+        outboxService.scheduleEvent("VerificationCase", saved.getCustomerId(), eventType, payload);
 
         log.info("Compliance officer {} finalized decision {} on case {}",
                 request.agentId(), action, caseId);

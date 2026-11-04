@@ -26,7 +26,15 @@ public class KycKafkaConsumer {
             KycEventPayload event = objectMapper.readValue(messagePayload, KycEventPayload.class);
             String consumerIdempotencyKey = "consumer:completed:" + event.caseId();
 
-            if (!idempotencyService.acquireLockOrToken(consumerIdempotencyKey)) {
+            IdempotencyService.IdempotencyResult idemResult;
+            try {
+                idemResult = idempotencyService.acquireKey(consumerIdempotencyKey, "EVENT_PAYLOAD_HASH");
+            } catch (Exception e) {
+                log.info("Consumer idempotency: Event for caseId {} already in progress or completed. Skipping duplicate.", event.caseId());
+                return;
+            }
+
+            if (!idemResult.shouldProceed()) {
                 log.info("Consumer idempotency: Event for caseId {} already processed. Skipping duplicate.", event.caseId());
                 return;
             }

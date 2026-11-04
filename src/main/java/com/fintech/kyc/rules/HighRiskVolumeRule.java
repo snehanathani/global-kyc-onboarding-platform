@@ -19,7 +19,7 @@ public class HighRiskVolumeRule implements KycRule {
 
     @Override
     public String getDescription() {
-        return "Escalates cases exceeding Â£50,000 annual transfer volume directly to Compliance Senior Review";
+        return "Escalates cases exceeding GBP 50,000 annual transfer volume directly to Compliance Senior Review";
     }
 
     @Override
@@ -38,7 +38,7 @@ public class HighRiskVolumeRule implements KycRule {
         return RuleEvaluationResult.escalateManualReview(
                 getRuleId(),
                 0.40,
-                "High transfer volume (> Â£50,000) mandates enhanced compliance oversight and manual verification"
+                "High transfer volume (> GBP 50,000) mandates enhanced compliance oversight and manual verification"
         );
     }
 }

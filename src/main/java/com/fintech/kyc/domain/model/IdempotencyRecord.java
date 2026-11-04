@@ -10,6 +10,12 @@ import java.util.UUID;
 })
 public class IdempotencyRecord {
 
+    public enum Status {
+        IN_PROGRESS,
+        COMPLETED,
+        FAILED
+    }
+
     @Id
     @Column(nullable = false, updatable = false)
     private String id;
@@ -17,8 +23,15 @@ public class IdempotencyRecord {
     @Column(nullable = false, updatable = false)
     private String idempotencyKey;
 
+    @Column(nullable = false, updatable = false)
+    private String requestHash;
+
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private String status; // "PROCESSING", "COMPLETED", "FAILED"
+    private Status status;
+
+    @Column(columnDefinition = "TEXT")
+    private String responsePayload;
 
     @Column(nullable = false, updatable = false)
     private Instant createdAt;
@@ -28,17 +41,21 @@ public class IdempotencyRecord {
     public IdempotencyRecord() {
     }
 
-    public IdempotencyRecord(String idempotencyKey, String status) {
+    public IdempotencyRecord(String idempotencyKey, String requestHash) {
         this.id = UUID.randomUUID().toString();
         this.idempotencyKey = idempotencyKey;
-        this.status = status;
+        this.requestHash = requestHash;
+        this.status = Status.IN_PROGRESS;
         this.createdAt = Instant.now();
     }
 
     public String getId() { return id; }
     public String getIdempotencyKey() { return idempotencyKey; }
-    public String getStatus() { return status; }
-    public void setStatus(String status) { this.status = status; }
+    public String getRequestHash() { return requestHash; }
+    public Status getStatus() { return status; }
+    public void setStatus(Status status) { this.status = status; }
+    public String getResponsePayload() { return responsePayload; }
+    public void setResponsePayload(String responsePayload) { this.responsePayload = responsePayload; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getCompletedAt() { return completedAt; }
     public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
